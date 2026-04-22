@@ -33,4 +33,4 @@
 ### 方式一：直接在线运行
 
 ```bash
-bash <(curl -fsSL https://v2rayssr.com/tool/change_mirror.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/V2RaySSR/OneKey/main/change_mirror.sh)
