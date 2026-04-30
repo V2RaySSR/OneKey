@@ -79,6 +79,7 @@ detect_os() {
   OS_PRETTY="Unknown"
 
   if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
     . /etc/os-release
     OS_PRETTY="${PRETTY_NAME:-Unknown}"
   fi
@@ -95,9 +96,16 @@ show_ufw_status() {
   printf "${BLUE}UFW 状态：${NC}\n"
 
   if command_exists ufw; then
-    ufw status 2>/dev/null || true
+    ufw_status="$(ufw status 2>/dev/null || true)"
+    printf "%s\n" "$ufw_status"
+
+    if printf "%s\n" "$ufw_status" | grep -qi "Status: active"; then
+      warn "UFW 正在运行"
+    else
+      ok "UFW 未运行"
+    fi
   else
-    warn "未检测到 ufw"
+    ok "未检测到 ufw，无需处理"
   fi
 }
 
@@ -113,14 +121,23 @@ show_firewalld_status() {
         ports="$(firewall-cmd --list-ports 2>/dev/null || true)"
         services="$(firewall-cmd --list-services 2>/dev/null || true)"
 
-        [ -n "$ports" ] && printf "已放行端口：%s\n" "$ports" || printf "已放行端口：未检测到\n"
-        [ -n "$services" ] && printf "已放行服务：%s\n" "$services" || printf "已放行服务：未检测到\n"
+        if [ -n "$ports" ]; then
+          printf "已放行端口：%s\n" "$ports"
+        else
+          printf "已放行端口：未检测到\n"
+        fi
+
+        if [ -n "$services" ]; then
+          printf "已放行服务：%s\n" "$services"
+        else
+          printf "已放行服务：未检测到\n"
+        fi
       fi
     else
       ok "firewalld 未运行"
     fi
   else
-    warn "未检测到 firewalld"
+    ok "未检测到 firewalld，无需处理"
   fi
 }
 
@@ -135,7 +152,7 @@ show_nftables_status() {
       ok "nftables 服务未运行"
     fi
   else
-    warn "未检测到 nftables 服务"
+    ok "未检测到 nftables 服务，无需处理"
   fi
 
   if command_exists nft; then
@@ -144,11 +161,16 @@ show_nftables_status() {
     if [ -n "$rules" ]; then
       warn "检测到 nftables 规则，显示前 40 行："
       printf "%s\n" "$rules" | sed -n '1,40p'
+
+      line_count="$(printf "%s\n" "$rules" | wc -l)"
+      if [ "$line_count" -gt 40 ]; then
+        warn "nftables 规则较多，仅显示前 40 行"
+      fi
     else
       ok "未检测到 nftables 规则"
     fi
   else
-    warn "未检测到 nft 命令"
+    ok "未检测到 nft 命令，无需处理"
   fi
 }
 
@@ -157,9 +179,44 @@ show_iptables_status() {
   printf "${BLUE}iptables 状态：${NC}\n"
 
   if command_exists iptables; then
-    iptables -L INPUT -n --line-numbers 2>/dev/null || true
+    rules="$(iptables -L INPUT -n --line-numbers 2>/dev/null || true)"
+
+    if [ -n "$rules" ]; then
+      printf "%s\n" "$rules"
+
+      if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
+        warn "检测到 iptables INPUT 链中存在 DROP / REJECT 规则"
+      else
+        ok "iptables INPUT 链未检测到明显 DROP / REJECT 规则"
+      fi
+    else
+      ok "未检测到 iptables INPUT 规则"
+    fi
   else
-    warn "未检测到 iptables"
+    ok "未检测到 iptables，无需处理"
+  fi
+}
+
+show_ip6tables_status() {
+  print_line
+  printf "${BLUE}ip6tables 状态：${NC}\n"
+
+  if command_exists ip6tables; then
+    rules="$(ip6tables -L INPUT -n --line-numbers 2>/dev/null || true)"
+
+    if [ -n "$rules" ]; then
+      printf "%s\n" "$rules"
+
+      if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
+        warn "检测到 ip6tables INPUT 链中存在 DROP / REJECT 规则"
+      else
+        ok "ip6tables INPUT 链未检测到明显 DROP / REJECT 规则"
+      fi
+    else
+      ok "未检测到 ip6tables INPUT 规则"
+    fi
+  else
+    ok "未检测到 ip6tables，无需处理"
   fi
 }
 
@@ -172,7 +229,7 @@ show_listening_ports() {
   elif command_exists netstat; then
     netstat -lntp 2>/dev/null || true
   else
-    warn "未检测到 ss 或 netstat，跳过监听端口显示"
+    ok "未检测到 ss 或 netstat，跳过监听端口显示"
   fi
 }
 
@@ -185,6 +242,7 @@ show_firewall_status() {
   show_firewalld_status
   show_nftables_status
   show_iptables_status
+  show_ip6tables_status
   show_listening_ports
 }
 
@@ -196,7 +254,7 @@ disable_ufw() {
     systemctl disable ufw >/dev/null 2>&1 || true
     ok "ufw 已尝试关闭"
   else
-    warn "未检测到 ufw，跳过"
+    ok "未检测到 ufw，跳过"
   fi
 }
 
@@ -207,13 +265,14 @@ disable_firewalld() {
     systemctl disable firewalld >/dev/null 2>&1 || true
     ok "firewalld 已尝试关闭"
   else
-    warn "未检测到 firewalld，跳过"
+    ok "未检测到 firewalld，跳过"
   fi
 }
 
 disable_nftables() {
   if service_exists nftables || command_exists nft; then
     log "正在关闭 nftables..."
+
     systemctl stop nftables >/dev/null 2>&1 || true
     systemctl disable nftables >/dev/null 2>&1 || true
 
@@ -223,7 +282,7 @@ disable_nftables() {
 
     ok "nftables 已尝试关闭并清空规则"
   else
-    warn "未检测到 nftables，跳过"
+    ok "未检测到 nftables，跳过"
   fi
 }
 
@@ -239,7 +298,7 @@ clear_iptables() {
     iptables -Z 2>/dev/null || true
     ok "IPv4 iptables 规则已尝试清空"
   else
-    warn "未检测到 iptables，跳过"
+    ok "未检测到 iptables，跳过"
   fi
 
   if command_exists ip6tables; then
@@ -251,13 +310,13 @@ clear_iptables() {
     ip6tables -Z 2>/dev/null || true
     ok "IPv6 ip6tables 规则已尝试清空"
   else
-    warn "未检测到 ip6tables，跳过"
+    ok "未检测到 ip6tables，跳过"
   fi
 }
 
 disable_firewall() {
   print_line
-  warn "即将关闭新系统常见防火墙：ufw、firewalld、nftables、iptables。"
+  warn "即将关闭新系统常见防火墙：ufw、firewalld、nftables、iptables、ip6tables。"
   warn "如果你正在通过 SSH 连接服务器，请确认 SSH 端口已在云厂商安全组放行。"
   print_line
 
@@ -286,10 +345,26 @@ disable_firewall() {
   warn "如果端口仍然无法访问，请到云服务器控制台单独放行端口。"
 }
 
+show_final_status() {
+  print_line
+  log "关闭后再次检测防火墙状态..."
+
+  show_ufw_status
+  show_firewalld_status
+  show_nftables_status
+  show_iptables_status
+  show_ip6tables_status
+  show_listening_ports
+
+  print_line
+  ok "脚本执行结束。"
+}
+
 main() {
   need_root
   show_firewall_status
   disable_firewall
+  show_final_status
 }
 
 main "$@"
