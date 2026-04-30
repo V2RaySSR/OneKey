@@ -9,6 +9,8 @@ NC='\033[0m'
 SCRIPT_VERSION="2026.04.21"
 SUPPORTED_TEXT="Ubuntu / Debian / CentOS / CentOS Stream / Rocky / AlmaLinux / Oracle Linux"
 
+NEED_DISABLE=0
+
 log() {
   printf "${BLUE}[INFO]${NC} %s\n" "$*"
 }
@@ -109,6 +111,7 @@ show_ufw_status() {
 
     if printf "%s\n" "$ufw_status" | grep -qi "Status: active"; then
       warn "UFW 正在运行"
+      NEED_DISABLE=1
     else
       ok "UFW 未运行"
     fi
@@ -124,6 +127,7 @@ show_firewalld_status() {
   if service_exists firewalld || command_exists firewall-cmd; then
     if service_active firewalld; then
       warn "firewalld 正在运行"
+      NEED_DISABLE=1
 
       if command_exists firewall-cmd; then
         ports="$(firewall-cmd --list-ports 2>/dev/null || true)"
@@ -156,6 +160,7 @@ show_nftables_status() {
   if service_exists nftables; then
     if service_active nftables; then
       warn "nftables 服务正在运行"
+      NEED_DISABLE=1
     else
       ok "nftables 服务未运行"
     fi
@@ -173,6 +178,7 @@ show_nftables_status() {
       else
         warn "检测到 nftables 规则，可能存在系统防火墙规则。"
         warn "为避免误伤系统网络，本脚本不会自动清空 nftables 规则。"
+        NEED_DISABLE=1
       fi
     else
       ok "未检测到 nftables 规则"
@@ -195,6 +201,7 @@ show_iptables_status() {
       if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
         warn "检测到 iptables INPUT 链中存在 DROP / REJECT 规则"
         warn "本脚本不会自动清空 iptables 规则，避免影响 Docker 或系统网络。"
+        NEED_DISABLE=1
       else
         ok "iptables INPUT 链未检测到明显 DROP / REJECT 规则"
       fi
@@ -219,6 +226,7 @@ show_ip6tables_status() {
       if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
         warn "检测到 ip6tables INPUT 链中存在 DROP / REJECT 规则"
         warn "本脚本不会自动清空 ip6tables 规则。"
+        NEED_DISABLE=1
       else
         ok "ip6tables INPUT 链未检测到明显 DROP / REJECT 规则"
       fi
@@ -244,6 +252,8 @@ show_listening_ports() {
 }
 
 show_firewall_status() {
+  NEED_DISABLE=0
+
   print_header
   print_safety_notice
   print_line
@@ -256,6 +266,19 @@ show_firewall_status() {
   show_iptables_status
   show_ip6tables_status
   show_listening_ports
+}
+
+exit_if_no_firewall() {
+  print_line
+
+  if [ "$NEED_DISABLE" -eq 0 ]; then
+    ok "当前未检测到需要关闭的常见防火墙。"
+    ok "ufw / firewalld / nftables 未运行，iptables / ip6tables 未发现明显 DROP / REJECT 规则。"
+    warn "如果端口仍然无法访问，请优先检查云厂商安全组、防火墙策略或网络 ACL。"
+    print_line
+    ok "脚本已自动退出。"
+    exit 0
+  fi
 }
 
 disable_ufw() {
@@ -358,6 +381,7 @@ show_final_status() {
 main() {
   need_root
   show_firewall_status
+  exit_if_no_firewall
   disable_firewall
   show_final_status
 }
