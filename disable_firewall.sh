@@ -40,6 +40,14 @@ print_header() {
   printf "${GREEN}===========================================================${NC}\n"
 }
 
+print_safety_notice() {
+  print_line
+  warn "安全提示：本脚本适合新 VPS 初始化、测试环境、个人学习环境使用。"
+  warn "禁止在生产环境直接运行一键关闭防火墙脚本。"
+  warn "生产环境建议按需放行端口，不建议完全关闭防火墙。"
+  warn "本脚本不会清空 nftables / iptables 规则，避免影响 Docker 网络。"
+}
+
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "请使用 root 用户运行本脚本。"
@@ -159,12 +167,12 @@ show_nftables_status() {
     rules="$(nft list ruleset 2>/dev/null || true)"
 
     if [ -n "$rules" ]; then
-      warn "检测到 nftables 规则，显示前 40 行："
-      printf "%s\n" "$rules" | sed -n '1,40p'
-
-      line_count="$(printf "%s\n" "$rules" | wc -l)"
-      if [ "$line_count" -gt 40 ]; then
-        warn "nftables 规则较多，仅显示前 40 行"
+      if printf "%s\n" "$rules" | grep -qi "DOCKER"; then
+        log "检测到 Docker 网络规则，通常是容器 NAT / 端口映射规则。"
+        log "为避免影响 Docker 网络，本脚本不会清空 nftables 规则。"
+      else
+        warn "检测到 nftables 规则，可能存在系统防火墙规则。"
+        warn "为避免误伤系统网络，本脚本不会自动清空 nftables 规则。"
       fi
     else
       ok "未检测到 nftables 规则"
@@ -186,6 +194,7 @@ show_iptables_status() {
 
       if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
         warn "检测到 iptables INPUT 链中存在 DROP / REJECT 规则"
+        warn "本脚本不会自动清空 iptables 规则，避免影响 Docker 或系统网络。"
       else
         ok "iptables INPUT 链未检测到明显 DROP / REJECT 规则"
       fi
@@ -209,6 +218,7 @@ show_ip6tables_status() {
 
       if printf "%s\n" "$rules" | grep -Eiq "DROP|REJECT"; then
         warn "检测到 ip6tables INPUT 链中存在 DROP / REJECT 规则"
+        warn "本脚本不会自动清空 ip6tables 规则。"
       else
         ok "ip6tables INPUT 链未检测到明显 DROP / REJECT 规则"
       fi
@@ -235,6 +245,8 @@ show_listening_ports() {
 
 show_firewall_status() {
   print_header
+  print_safety_notice
+  print_line
   show_system_info
   log "正在检测当前防火墙状态..."
 
@@ -250,8 +262,12 @@ disable_ufw() {
   if command_exists ufw; then
     log "正在关闭 ufw..."
     ufw disable >/dev/null 2>&1 || true
-    systemctl stop ufw >/dev/null 2>&1 || true
-    systemctl disable ufw >/dev/null 2>&1 || true
+
+    if has_systemctl; then
+      systemctl stop ufw >/dev/null 2>&1 || true
+      systemctl disable ufw >/dev/null 2>&1 || true
+    fi
+
     ok "ufw 已尝试关闭"
   else
     ok "未检测到 ufw，跳过"
@@ -261,72 +277,51 @@ disable_ufw() {
 disable_firewalld() {
   if service_exists firewalld || command_exists firewall-cmd; then
     log "正在关闭 firewalld..."
-    systemctl stop firewalld >/dev/null 2>&1 || true
-    systemctl disable firewalld >/dev/null 2>&1 || true
+
+    if has_systemctl; then
+      systemctl stop firewalld >/dev/null 2>&1 || true
+      systemctl disable firewalld >/dev/null 2>&1 || true
+    fi
+
     ok "firewalld 已尝试关闭"
   else
     ok "未检测到 firewalld，跳过"
   fi
 }
 
-disable_nftables() {
-  if service_exists nftables || command_exists nft; then
-    log "正在关闭 nftables..."
+disable_nftables_service_only() {
+  if service_exists nftables; then
+    log "正在关闭 nftables 服务..."
 
-    systemctl stop nftables >/dev/null 2>&1 || true
-    systemctl disable nftables >/dev/null 2>&1 || true
-
-    if command_exists nft; then
-      nft flush ruleset >/dev/null 2>&1 || true
+    if has_systemctl; then
+      systemctl stop nftables >/dev/null 2>&1 || true
+      systemctl disable nftables >/dev/null 2>&1 || true
     fi
 
-    ok "nftables 已尝试关闭并清空规则"
+    ok "nftables 服务已尝试关闭"
+    warn "本脚本不会执行 nft flush ruleset，避免影响 Docker 或系统网络规则。"
   else
-    ok "未检测到 nftables，跳过"
-  fi
-}
-
-clear_iptables() {
-  log "正在清空 iptables / ip6tables 规则..."
-
-  if command_exists iptables; then
-    iptables -P INPUT ACCEPT 2>/dev/null || true
-    iptables -P FORWARD ACCEPT 2>/dev/null || true
-    iptables -P OUTPUT ACCEPT 2>/dev/null || true
-    iptables -F 2>/dev/null || true
-    iptables -X 2>/dev/null || true
-    iptables -Z 2>/dev/null || true
-    ok "IPv4 iptables 规则已尝试清空"
-  else
-    ok "未检测到 iptables，跳过"
-  fi
-
-  if command_exists ip6tables; then
-    ip6tables -P INPUT ACCEPT 2>/dev/null || true
-    ip6tables -P FORWARD ACCEPT 2>/dev/null || true
-    ip6tables -P OUTPUT ACCEPT 2>/dev/null || true
-    ip6tables -F 2>/dev/null || true
-    ip6tables -X 2>/dev/null || true
-    ip6tables -Z 2>/dev/null || true
-    ok "IPv6 ip6tables 规则已尝试清空"
-  else
-    ok "未检测到 ip6tables，跳过"
+    ok "未检测到 nftables 服务，跳过"
   fi
 }
 
 disable_firewall() {
   print_line
-  warn "即将关闭新系统常见防火墙：ufw、firewalld、nftables、iptables、ip6tables。"
-  warn "如果你正在通过 SSH 连接服务器，请确认 SSH 端口已在云厂商安全组放行。"
+  warn "即将关闭常见 Linux 防火墙服务：ufw、firewalld、nftables。"
+  warn "本脚本不会清空 nftables / iptables 规则，避免影响 Docker 网络。"
+  warn "禁止在生产环境直接运行一键关闭防火墙脚本。"
+  warn "生产环境建议按需放行端口，不建议完全关闭防火墙。"
+  warn "如果你正在通过 SSH 连接服务器，请确认 SSH 端口已在云厂商安全组中放行。"
   print_line
 
-  read -rp "确认关闭防火墙？[y/N]: " confirm
+  read -rp "确认关闭防火墙？默认 N，输入 y 继续关闭防火墙 [y/N]: " confirm
 
   case "$confirm" in
     y|Y)
+      log "已确认继续关闭防火墙。"
       ;;
     *)
-      warn "已取消操作。"
+      warn "未输入 y，已取消关闭防火墙操作。"
       exit 0
       ;;
   esac
@@ -335,14 +330,14 @@ disable_firewall() {
 
   disable_ufw
   disable_firewalld
-  disable_nftables
-  clear_iptables
+  disable_nftables_service_only
 
   print_line
-  ok "防火墙关闭完成。"
+  ok "防火墙服务关闭操作完成。"
 
   warn "重要提醒：云厂商安全组、防火墙策略、网络 ACL 无法通过本脚本关闭。"
   warn "如果端口仍然无法访问，请到云服务器控制台单独放行端口。"
+  warn "生产环境请重新评估安全策略，不建议长期关闭防火墙。"
 }
 
 show_final_status() {
