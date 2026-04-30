@@ -22,6 +22,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/V2RaySSR/OneKey/main/change_
 
 ## Linux 一键关闭防火墙脚本
 
+禁止在生产环境直接运行一键关闭防火墙脚本。
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/V2RaySSR/OneKey/main/disable_firewall.sh)
 ```
